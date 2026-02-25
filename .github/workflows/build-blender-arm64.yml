@@ -1,6 +1,8 @@
 name: Build Blender Linux ARM64
 
 on:
+  push:
+    branches: [master]
   workflow_dispatch:
 
 jobs:
