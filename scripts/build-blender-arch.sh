@@ -5,9 +5,10 @@
 #
 # 流程就是 Blender 官方 Linux 源码构建流程，不走 PKGBUILD：
 #   1. pacman 装构建工具 + 图形/音频系统库
-#   2. git clone Blender 源码（github 镜像，tag 定点）
-#   3. make update：拉子模块 + 官方预编译 lib-linux_arm64（arm64 专用，2026-10 起由 make update 自动使用）
-#   4. make release ninja：CMake 配置 + 编译 + 安装到 build 目录（便携布局）
+#   2. git clone Blender 源码（官方源 projects.blender.org，--depth 1 浅克隆，tag 定点）
+#   3. make update：子模块（浅克隆） + 官方预编译 lib-linux_arm64（arm64 专用，2026-10 起由 make update 自动使用）
+#   4. 用 CMake 3.31.8 官方二进制（盖掉 Arch 自带的 cmake 4.5.1，见下文注释），
+#      make release ninja：CMake 配置 + 编译 + 安装到 build 目录（便携布局）
 #   5. package_archive 打包，产物放 /work/out/
 #
 # 关键取舍（都写在 BUILD_CMAKE_ARGS 里）：
@@ -40,7 +41,7 @@ pacman -Sy --noconfirm --disable-sandbox archlinuxarm-keyring
 pacman -Syu --noconfirm --disable-sandbox
 
 echo "==> 安装核心构建工具"
-pacman -S --noconfirm --disable-sandbox --needed base-devel cmake ninja git git-lfs subversion python zstd xz
+pacman -S --noconfirm --disable-sandbox --needed base-devel cmake ninja git git-lfs subversion python zstd xz curl
 
 echo "==> 安装图形/音频系统库（逐个装，缺失的跳过，不让单个包名拖垮整个构建）"
 for pkg in libx11 libxxf86vm libxcursor libxi libxrandr libxinerama libegl mesa \
@@ -69,6 +70,18 @@ cd blender-git/blender
 git log --oneline -1
 git status --short --branch | head -n 5 || true
 
+echo "==> 子模块浅克隆配置（只拉一层历史）"
+# make update 内部跑 `git submodule update --init`，不带 --depth，
+# 预编译库 lib/linux_arm64 等子模块会全量克隆历史，又大又慢。
+# 把 shallow=true 写进 .gitmodules 和本地配置，submodule update 就按 --depth 1 克隆。
+git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | while read -r key _path; do
+  name="${key#submodule.}"
+  name="${name%.path}"
+  git config -f .gitmodules "submodule.${name}.shallow" true
+  git config "submodule.${name}.shallow" true
+done
+git config -f .gitmodules --get-regexp '^submodule\..*\.shallow$' || echo "::warning::浅克隆配置未生效（继续全量克隆子模块）"
+
 echo "==> make update：子模块 + 官方预编译 lib-linux_arm64"
 # 默认不拉 tests（--use-tests 才是拉测试数据），lib 目录命中缓存时会做 svn update 增量更新。
 make update
@@ -77,6 +90,21 @@ echo "==> 预编译库检查"
 ls lib/linux_arm64/ | head -n 30
 test -d lib/linux_arm64/python || { echo "::error::lib/linux_arm64/python 不存在，预编译库没拉下来"; exit 1; }
 df -h
+
+echo "==> 安装 CMake 3.31.8（官方 aarch64 二进制）"
+# Arch 自带 cmake 4.5.1，而 Blender 5.3.0 的 source/creator/CMakeLists.txt
+# 用了 install(CODE ... DEPENDS blender)，CMake 4 不认 DEPENDS 参数，
+# configure 直接报错（run 46063726480 就是这么死的）。
+# Blender 只要求 CMake >= 3.21，用官方 3.31.8 二进制并校验 SHA-256，
+# 放 PATH 最前面盖掉系统 cmake。
+CMAKE_TGZ="cmake-3.31.8-linux-aarch64.tar.gz"
+CMAKE_SHA256="609735983e3bdf24b6ab379d918458d64196fe72b98226f62dd5e9fe7b2997cc"
+curl -fL -o "/tmp/${CMAKE_TGZ}" "https://github.com/Kitware/CMake/releases/download/v3.31.8/${CMAKE_TGZ}"
+echo "${CMAKE_SHA256}  /tmp/${CMAKE_TGZ}" | sha256sum -c -
+mkdir -p /opt/cmake-3.31
+tar -xzf "/tmp/${CMAKE_TGZ}" -C /opt/cmake-3.31 --strip-components=1
+export PATH="/opt/cmake-3.31/bin:$PATH"
+cmake --version | head -n 1
 
 echo "==> 编译（这一步最久，2 核约数小时）"
 export BUILD_CMAKE_ARGS="-DWITH_CYCLES_DEVICE_CUDA=OFF -DWITH_CYCLES_DEVICE_OPTIX=OFF -DWITH_CYCLES_DEVICE_HIP=OFF -DWITH_CYCLES_DEVICE_ONEAPI=OFF -DWITH_INSTALL_PORTABLE=ON"
