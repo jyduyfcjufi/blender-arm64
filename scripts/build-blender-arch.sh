@@ -55,7 +55,16 @@ git lfs install || true
 echo "==> 拉取 Blender 源码 $TAG"
 rm -rf blender-git/blender
 mkdir -p blender-git
-git clone --depth 1 --branch "$TAG" https://github.com/blender/blender.git blender-git/blender
+# 注意：必须从官方源克隆。GitHub 镜像（github.com/blender/blender）的 LFS
+# 不完整，run 46063180349 就是在 checkout 时下载
+# assets/brushes/essentials_brushes-curve_sculpt.blend 报 404
+#（Object does not exist on the server），导致 clone 失败 exit 128。
+# 官方源 projects.blender.org 是正本，LFS 对象都在那里。
+# 万一官方源连不上，再退回 GitHub 镜像并跳过 LFS（资产可能不完整）。
+if ! git clone --depth 1 --branch "$TAG" https://projects.blender.org/blender/blender.git blender-git/blender; then
+  echo "::warning::官方源克隆失败，改用 GitHub 镜像并跳过 LFS 下载"
+  GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --branch "$TAG" https://github.com/blender/blender.git blender-git/blender
+fi
 cd blender-git/blender
 git log --oneline -1
 git status --short --branch | head -n 5 || true
