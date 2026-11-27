@@ -49,7 +49,8 @@ echo "==> 安装图形/音频系统库（逐个装，缺失的跳过，不让单
 for pkg in libx11 libxxf86vm libxcursor libxi libxrandr libxinerama libegl mesa \
            wayland wayland-protocols libxkbcommon libdecor libepoxy \
            sdl2 jack2 libsndfile freetype2 fontconfig alsa-lib libpulse \
-           vulkan-icd-loader vulkan-headers shaderc patchelf nasm; do
+           vulkan-icd-loader vulkan-headers shaderc patchelf nasm \
+           libsm libxext libxrender libxfixes; do
   pacman -S --noconfirm --disable-sandbox --needed "$pkg" || echo "::warning::跳过系统包 $pkg"
 done
 
