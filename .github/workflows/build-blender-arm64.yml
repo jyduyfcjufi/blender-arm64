@@ -108,9 +108,14 @@ jobs:
           for f in out/*; do
             echo "== $f =="
             file "$f" || true
-            tar --list --zstd --file "$f" 2>/dev/null | head -n 20 \
-              || tar --list --xz --file "$f" 2>/dev/null | head -n 20 \
-              || tar --list --gzip --file "$f" 2>/dev/null | head -n 20 || true
+            # 清单先写文件再 head，避免 tar | head 的 SIGPIPE 误判（见 prepare 脚本注释）。
+            _list=$(mktemp)
+            if tar --list --zstd --file "$f" > "$_list" 2>/dev/null \
+              || tar --list --xz --file "$f" > "$_list" 2>/dev/null \
+              || tar --list --gzip --file "$f" > "$_list" 2>/dev/null; then
+              head -n 20 "$_list"
+            fi
+            rm -f "$_list"
           done
           test -n "$(ls -A out/)" || { echo "::error::out/ 为空，构建没有产出包"; exit 1; }
 

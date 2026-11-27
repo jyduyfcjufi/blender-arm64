@@ -11,8 +11,8 @@ set -euo pipefail
 TARBALL="/tmp/ArchLinuxARM-aarch64-latest.tar.gz"
 
 URLS=(
-  "https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
   "http://mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
+  "https://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
   "https://de.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
   "https://uk.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
   "https://ca.us.mirror.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz"
@@ -44,8 +44,13 @@ if [ -z "$downloaded" ]; then
 fi
 
 echo "==> tarball 内容抽查"
-tar -tzf "$TARBALL" | head -n 10
-tar -tzf "$TARBALL" | grep -q "etc/pacman.conf" || { echo "::error::tarball 里没有 etc/pacman.conf，不是 Arch rootfs"; exit 1; }
+# 注意：不要用 `tar -tzf file | head/grep -q` 的写法。本脚本有 pipefail，
+# head/grep 提前退出会让 tar 写管道失败（tar: stdout: write error，exit 2），
+# 上次构建就是这样在下载成功后白白失败的。先把清单写到文件再查。
+tar -tzf "$TARBALL" > /tmp/alarm-file-list.txt
+head -n 10 /tmp/alarm-file-list.txt
+grep -q "etc/pacman.conf" /tmp/alarm-file-list.txt || { echo "::error::tarball 里没有 etc/pacman.conf，不是 Arch rootfs"; exit 1; }
+rm -f /tmp/alarm-file-list.txt
 
 echo "==> docker import 为 arch-arm64:local"
 docker import "$TARBALL" arch-arm64:local

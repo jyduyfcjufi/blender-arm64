@@ -93,9 +93,14 @@ fi
 echo "==> 最终产物"
 ls -lh /work/out/
 for f in /work/out/*; do
-  tar --list --zstd --file "$f" 2>/dev/null | head -n 15 \
-    || tar --list --xz --file "$f" 2>/dev/null | head -n 15 \
-    || tar --list --gzip --file "$f" 2>/dev/null | head -n 15 || true
+  # 同 prepare 脚本：清单先写文件再 head，避免 tar | head 的 SIGPIPE 误判。
+  _list=$(mktemp)
+  if tar --list --zstd --file "$f" > "$_list" 2>/dev/null \
+    || tar --list --xz --file "$f" > "$_list" 2>/dev/null \
+    || tar --list --gzip --file "$f" > "$_list" 2>/dev/null; then
+    head -n 15 "$_list"
+  fi
+  rm -f "$_list"
 done
 date
 echo "==> 构建成功"
