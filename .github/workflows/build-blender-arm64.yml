@@ -1,164 +1,138 @@
 name: Build Blender Linux ARM64
 
+# 直接源码构建：Arch Linux ARM64 容器 + Blender 官方源码 + 预编译 lib-linux_arm64
+# 不走 Arch PKGBUILD / makepkg，不装系统版依赖编译，只用 Blender 自己的 make 流程。
+# 触发方式：Actions -> Build Blender Linux ARM64 -> Run workflow，填版本号（默认 v5.3.0）。
+
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
+    inputs:
+      blender_tag:
+        description: "Blender tag，例如 v5.3.0（最新稳定版）"
+        required: true
+        default: "v5.3.0"
+        type: string
+      build_target:
+        description: "构建目标：standard=官方 release 全功能（无 GPU 二进制），lite=精简更快"
+        required: true
+        default: "standard"
+        type: choice
+        options:
+          - standard
+          - lite
+      create_release:
+        description: "构建成功后发一个 GitHub Release"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: blender-arm64-build
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
 
     steps:
       - name: Checkout workflow repo
         uses: actions/checkout@v4
 
-      - name: Get latest Blender release tag
-        id: get_version
+      - name: Show runner info
         run: |
-          LATEST_TAG=$(git ls-remote --tags --sort=-v:refname \
-            https://projects.blender.org/blender/blender.git \
-            'v[0-9]*.[0-9]*.[0-9]*' | head -1 | sed 's|.*refs/tags/||')
-          echo "tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
-          echo "获取到最新版本: ${LATEST_TAG}"
+          uname -m
+          nproc
+          free -h
+          df -h
+          docker --version
 
-      # ---- 缓存 APT 包 ----
-      - name: Cache APT packages
-        uses: actions/cache@v4
-        with:
-          path: ~/apt-cache
-          key: apt-arm64-${{ runner.os }}-v1
-          restore-keys: apt-arm64-
-
-      - name: Install build dependencies
+      - name: Validate Blender tag
         run: |
-          # 如果缓存存在，先从缓存恢复
-          if [ -d ~/apt-cache ]; then
-            sudo cp -r ~/apt-cache/*.deb /var/cache/apt/archives/ 2>/dev/null || true
+          TAG="${{ inputs.blender_tag }}"
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::blender_tag 必须是 vX.Y.Z 格式，例如 v5.3.0，当前是 $TAG"
+            exit 1
           fi
-          sudo apt-get update
-          sudo apt-get install -y software-properties-common
-          sudo add-apt-repository -y ppa:deadsnakes/ppa
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential git subversion cmake ccache \
-            libx11-dev libxxf86vm-dev libxcursor-dev libxi-dev libxrandr-dev libxinerama-dev \
-            libwayland-dev wayland-protocols libxkbcommon-dev libdbus-1-dev linux-libc-dev \
-            libgl1-mesa-dev libegl-dev libgles2-mesa-dev \
-            libpulse-dev libjack-dev libsndfile1-dev \
-            libfreetype6-dev libfontconfig1-dev \
-            libtbb-dev libopenvdb-dev libopencolorio-dev libopenimageio-dev \
-            libboost-all-dev libpng-dev libjpeg-dev libtiff-dev libwebp-dev \
-            libopenexr-dev libilmbase-dev \
-            libfftw3-dev libxml2-dev libyaml-cpp-dev \
-            libhdf5-dev libopenjp2-7-dev \
-            libzstd-dev liblzma-dev liblz4-dev \
-            libepoxy-dev libsdl2-dev \
-            python3.11-dev python3-numpy python3-requests \
-            libpotrace-dev libgmp-dev libpugixml-dev \
-            libvulkan-dev libshaderc-dev spirv-tools \
-            nasm yasm patchelf
-          # 保存下载的 deb 到缓存目录
-          mkdir -p ~/apt-cache
-          cp /var/cache/apt/archives/*.deb ~/apt-cache/ 2>/dev/null || true
+          if ! git ls-remote --tags https://github.com/blender/blender.git "$TAG" | grep -q "$TAG"; then
+            echo "::error::在 blender/blender 上找不到 tag $TAG"
+            exit 1
+          fi
+          echo "tag $TAG 存在，继续构建"
 
-      # ---- 缓存 Blender 源码 ----
-      - name: Cache Blender source
-        id: cache_src
+      - name: Free disk space
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /opt/hostedtoolcache /usr/local/lib/android \
+            /opt/ghc /usr/local/share/boost /usr/lib/jvm 2>/dev/null || true
+          docker system prune -af 2>/dev/null || true
+          df -h
+
+      - name: Add swap (private runner 只有 8G 内存，链接阶段容易 OOM)
+        run: |
+          if [ ! -f /swapfile ]; then
+            sudo fallocate -l 8G /swapfile && sudo chmod 600 /swapfile \
+              && sudo mkswap /swapfile && sudo swapon /swapfile \
+              && echo "swap 已开启" || echo "::warning::swap 开启失败，继续构建"
+          fi
+          free -h
+
+      - name: Cache Blender precompiled libraries (lib-linux_arm64)
         uses: actions/cache@v4
         with:
-          path: blender-src
-          key: blender-src-${{ steps.get_version.outputs.tag }}
-
-      - name: Clone Blender source
-        if: steps.cache_src.outputs.cache-hit != 'true'
-        run: |
-          git clone --depth 1 --branch ${{ steps.get_version.outputs.tag }} \
-            https://projects.blender.org/blender/blender.git blender-src
-
-      - name: Update Blender submodules
-        if: steps.cache_src.outputs.cache-hit != 'true'
-        working-directory: blender-src
-        run: |
-          make update
-
-      # ---- 缓存 ccache 编译缓存 ----
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache
-          key: ccache-arm64-${{ steps.get_version.outputs.tag }}-${{ github.sha }}
+          path: blender-git/lib
+          key: blender-lib-arm64-${{ inputs.blender_tag }}
           restore-keys: |
-            ccache-arm64-${{ steps.get_version.outputs.tag }}-
-            ccache-arm64-
+            blender-lib-arm64-
 
-      - name: Configure ccache
+      - name: Prepare Arch Linux ARM container image
         run: |
-          ccache --set-config=max_size=2G
-          ccache --set-config=compression=true
-          ccache -z
+          chmod +x scripts/*.sh
+          bash scripts/prepare-arch-image.sh
 
-      - name: Configure Blender with CMake
+      - name: Build Blender inside Arch ARM container
         run: |
-          mkdir -p build && cd build
-          cmake ../blender-src \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/opt/blender \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DPYTHON_VERSION=3.11 \
-            -DPYTHON_LIBRARY=/usr/lib/aarch64-linux-gnu/libpython3.11.so \
-            -DPYTHON_LIBPATH=/usr/lib/aarch64-linux-gnu \
-            -DPYTHON_INCLUDE_DIR=/usr/include/python3.11 \
-            -DWITH_INSTALL_PORTABLE=ON \
-            -DWITH_PYTHON_INSTALL=ON \
-            -DWITH_CYCLES=ON \
-            -DWITH_CYCLES_EMBREE=OFF \
-            -DWITH_OPENCOLORIO=ON \
-            -DWITH_OPENIMAGEIO=ON \
-            -DWITH_OPENSUBDIV=ON \
-            -DWITH_OPENVDB=ON \
-            -DWITH_ALEMBIC=ON \
-            -DWITH_CODEC_FFMPEG=ON \
-            -DWITH_CODEC_SNDFILE=ON \
-            -DWITH_FFTW3=ON \
-            -DWITH_SDL=ON \
-            -DWITH_JACK=ON \
-            -DWITH_PULSEAUDIO=ON \
-            -DWITH_MOD_OCEANSIM=ON \
-            -DWITH_INTERNATIONAL=ON \
-            -DWITH_POTRACE=ON
+          mkdir -p out
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            arch-arm64:local \
+            bash scripts/build-blender-arch.sh "${{ inputs.blender_tag }}" "${{ inputs.build_target }}"
 
-      - name: Build Blender
+      - name: Verify package
         run: |
-          cd build
-          make -j$(nproc)
-
-      - name: Show ccache stats
-        run: ccache -s
-
-      - name: Install Blender
-        run: |
-          cd build
-          make install
-
-      - name: Package Blender
-        run: |
-          TAG=${{ steps.get_version.outputs.tag }}
-          tar -czf "blender-${TAG}-linux-arm64.tar.gz" -C /opt blender
+          ls -lh out/
+          for f in out/*; do
+            echo "== $f =="
+            file "$f" || true
+            tar --list --zstd --file "$f" 2>/dev/null | head -n 20 \
+              || tar --list --xz --file "$f" 2>/dev/null | head -n 20 \
+              || tar --list --gzip --file "$f" 2>/dev/null | head -n 20 || true
+          done
+          test -n "$(ls -A out/)" || { echo "::error::out/ 为空，构建没有产出包"; exit 1; }
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: blender-${{ steps.get_version.outputs.tag }}-linux-arm64
-          path: blender-*.tar.gz
-          retention-days: 30
+          name: blender-${{ inputs.blender_tag }}-linux-aarch64-arch
+          path: out/*
+          retention-days: 90
 
       - name: Create Release
+        if: ${{ inputs.create_release }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.get_version.outputs.tag }}-arm64
-          name: "Blender ${{ steps.get_version.outputs.tag }} Linux ARM64"
-          files: blender-*.tar.gz
+          tag_name: ${{ inputs.blender_tag }}-arch-arm64
+          name: "Blender ${{ inputs.blender_tag }} Linux ARM64 (Arch 源码构建)"
+          body: |
+            Blender ${{ inputs.blender_tag }}，直接源码构建，Arch Linux ARM64。
+            - 构建方式：`make update`（官方预编译 lib-linux_arm64）+ `make release ninja`，目标 ${{ inputs.build_target }}
+            - 运行环境：Arch Linux ARM aarch64，CPU 需支持 armv8.2-a+dotprod+fp16+lse（树莓派 5 / 骁龙 845 及更新 / 大多数 ARM64 机器都满足）
+            - Cycles CPU 渲染可用；CUDA / OptiX / HIP / oneAPI 二进制已禁用（通用 ARM64 机器没有这些 GPU 工具链）
+            - 解压即用：`tar -xf blender-*.tar.*`，运行里面的 `blender`
+          files: out/*
           draft: false
           prerelease: false
