@@ -29,20 +29,25 @@ df -h
 date
 
 echo "==> pacman 初始化并滚动更新"
+# 注意：pacman 7 默认用 Landlock 沙箱下载/安装，但 GitHub hosted runner 的
+# Docker 里没有应用 Landlock 规则集的权限，会报
+# "restricting filesystem access failed ... Operation not permitted" /
+# "switching to sandbox user 'alpm' failed"，导致 pacman -Syu 直接失败。
+# 容器内一次性构建用 --disable-sandbox 是通行做法。
 pacman-key --init
 pacman-key --populate archlinuxarm
-pacman -Sy --noconfirm archlinuxarm-keyring
-pacman -Syu --noconfirm
+pacman -Sy --noconfirm --disable-sandbox archlinuxarm-keyring
+pacman -Syu --noconfirm --disable-sandbox
 
 echo "==> 安装核心构建工具"
-pacman -S --noconfirm --needed base-devel cmake ninja git git-lfs subversion python zstd xz
+pacman -S --noconfirm --disable-sandbox --needed base-devel cmake ninja git git-lfs subversion python zstd xz
 
 echo "==> 安装图形/音频系统库（逐个装，缺失的跳过，不让单个包名拖垮整个构建）"
 for pkg in libx11 libxxf86vm libxcursor libxi libxrandr libxinerama libegl mesa \
            wayland wayland-protocols libxkbcommon libdecor libepoxy \
            sdl2 jack2 libsndfile freetype2 fontconfig alsa-lib libpulse \
            vulkan-icd-loader vulkan-headers shaderc patchelf nasm; do
-  pacman -S --noconfirm --needed "$pkg" || echo "::warning::跳过系统包 $pkg"
+  pacman -S --noconfirm --disable-sandbox --needed "$pkg" || echo "::warning::跳过系统包 $pkg"
 done
 
 git lfs install || true
