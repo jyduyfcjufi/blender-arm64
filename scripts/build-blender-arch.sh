@@ -14,6 +14,8 @@
 # 关键取舍（都写在 BUILD_CMAKE_ARGS 里）：
 # - Cycles 的 CUDA / OptiX / HIP / oneAPI 设备支持全部关掉：通用 ARM64 机器没有
 #   这些 GPU 工具链，开着只会让 CMake 报错或白白编译 GPU 内核；Cycles CPU 渲染不受影响。
+# - 光关 DEVICE_* 还不够：WITH_CYCLES_*_BINARIES 默认 ON，ninja 仍会编译 GPU 内核，
+#   没有 nvcc/hipcc 会直接失败，所以 *_BINARIES 和 HIPRT 也要显式关掉。
 # - 不关 Embree / OIDN / OpenVDB / USD 等：它们在 lib-linux_arm64 预编译库里有 arm64 版。
 set -euo pipefail
 
@@ -107,7 +109,13 @@ export PATH="/opt/cmake-3.31/bin:$PATH"
 cmake --version | head -n 1
 
 echo "==> 编译（这一步最久，2 核约数小时）"
-export BUILD_CMAKE_ARGS="-DWITH_CYCLES_DEVICE_CUDA=OFF -DWITH_CYCLES_DEVICE_OPTIX=OFF -DWITH_CYCLES_DEVICE_HIP=OFF -DWITH_CYCLES_DEVICE_ONEAPI=OFF -DWITH_INSTALL_PORTABLE=ON"
+# Cycles 的 CUDA / OptiX / HIP / oneAPI 设备支持全部关掉：通用 ARM64 机器没有
+# 这些 GPU 工具链，开着只会让 CMake 报错或白白编译 GPU 内核；Cycles CPU 渲染不受影响。
+# 注意：光关 DEVICE_* 还不够——WITH_CYCLES_*_BINARIES 默认是 ON，
+# ninja 仍会去编译 CUDA/HIP/oneAPI 内核（.ptx），而机器上没有 nvcc/hipcc，
+# 命令行为空直接报 command not found（run 46065227025 就是死在
+# kernel_compute_75.ptx 上）。所以 *_BINARIES 也要显式关掉；HIPRT 同理。
+export BUILD_CMAKE_ARGS="-DWITH_CYCLES_DEVICE_CUDA=OFF -DWITH_CYCLES_DEVICE_OPTIX=OFF -DWITH_CYCLES_DEVICE_HIP=OFF -DWITH_CYCLES_DEVICE_ONEAPI=OFF -DWITH_CYCLES_DEVICE_HIPRT=OFF -DWITH_CYCLES_CUDA_BINARIES=OFF -DWITH_CYCLES_HIP_BINARIES=OFF -DWITH_CYCLES_ONEAPI_BINARIES=OFF -DWITH_INSTALL_PORTABLE=ON"
 if [ "$TARGET" = "lite" ]; then
   make lite ninja
   BUILD_DIR="../build_linux_lite"
