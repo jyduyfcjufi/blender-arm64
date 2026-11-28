@@ -139,7 +139,11 @@ mkdir -p /work/out
 # 优先用 Blender 自带的 package_archive（官方打包方式，产物在 build 目录的 release/ 下）
 if cmake --build "$BUILD_DIR" --target package_archive; then
   ls -lh "$BUILD_DIR/release/"
-  cp "$BUILD_DIR"/release/blender-*.tar.* /work/out/
+  # package_archive 产物的文件名是大写 B 开头，例如
+  # Blender-5.3-02f0899d78e3-linux-aarch64.tar.xz（run 46082376164
+  # 就是因为 glob 用小写 blender-*.tar.* 没匹配上而失败），
+  # 用 [Bb]lender 兼容两种大小写。
+  cp "$BUILD_DIR"/release/[Bb]lender-*.tar.* /work/out/
 else
   echo "::warning::package_archive 失败，改用手动打包 build 目录的 bin/ 便携布局"
   tar --zstd -cf "/work/out/blender-${VER}-linux-aarch64-arch.tar.zst" -C "$BUILD_DIR/bin" .
